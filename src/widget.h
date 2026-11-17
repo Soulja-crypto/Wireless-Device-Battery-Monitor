@@ -24,6 +24,9 @@ void Destroy();
 bool Alive();
 void SetItems(const std::vector<WidgetItem>& items, const std::wstring& tooltip);
 void SetLightTheme(bool light);
+// Song currently playing ("Artist - Song"), drawn after the devices with a music note. Empty hides it.
+// Takes effect with the next SetItems().
+void SetNowPlaying(const std::wstring& text);
 // Draws a rounded plate in the taskbar's colours behind the text (kept across Create/Destroy).
 void SetBackground(bool on);
 // Which taskbars show the strip: L"all" (default), L"main", or the id of one other monitor from

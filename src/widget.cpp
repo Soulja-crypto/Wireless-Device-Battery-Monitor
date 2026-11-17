@@ -12,6 +12,7 @@ UINT g_clickMsg;
 bool g_light, g_hover;
 bool g_background;  // opaque rounded plate behind the text, for transparent / restyled taskbars
 std::vector<WidgetItem> g_items;
+std::wstring g_nowPlaying;  // "Artist - Song" from Spotify; empty = not shown
 std::wstring g_tipText;
 RECT g_lastTray{}, g_lastBar{}, g_lastWidgets{};
 int g_lastW = -1, g_lastDpi = 0, g_lastLeft = -1;
@@ -236,6 +237,8 @@ wchar_t Glyph(DeviceKind k, bool bluetooth) {
 }
 constexpr wchar_t kBolt = 0xE945;            // LightningBolt
 constexpr wchar_t kBatteryUnknown = 0xE996;  // shown when there is nothing to display
+constexpr wchar_t kMusicNote = 0xE8D6;       // Audio (music note)
+constexpr size_t kNowPlayingMaxChars = 34;   // keeps the strip from growing over the taskbar buttons
 
 // Creates a font, falling back when the preferred face is not installed (GDI would silently substitute).
 HFONT MakeFont(int px, int weight, const wchar_t* face, const wchar_t* fallback, int fallbackPx = 0) {
@@ -345,6 +348,17 @@ std::vector<Piece> Layout(int& width) {
         out.push_back({ RenderMask(t, text, g_light), tc, a, it.charging ? Px(2) : 0 });
         if (it.charging) out.push_back({ RenderMask(std::wstring(1, kBolt), bolt, g_light), charge, a, 0 });
         out.back().gapAfter = i + 1 < g_items.size() ? Px(14) : 0;
+    }
+    if (!g_nowPlaying.empty()) {
+        std::wstring shown = g_nowPlaying;
+        if (shown.size() > kNowPlayingMaxChars) {
+            shown.resize(kNowPlayingMaxChars - 1);
+            while (!shown.empty() && shown.back() == L' ') shown.pop_back();
+            shown += L"…";
+        }
+        if (!out.empty()) out.back().gapAfter = Px(14);
+        out.push_back({ RenderMask(std::wstring(1, kMusicNote), icons, g_light), fg, 255, Px(5) });
+        out.push_back({ RenderMask(shown, text, g_light), fg, 255, 0 });
     }
     DeleteObject(icons);
     DeleteObject(bolt);
@@ -726,6 +740,8 @@ void SetItems(const std::vector<WidgetItem>& items, const std::wstring& tooltip)
     PaintAll();
     Reposition();
 }
+
+void SetNowPlaying(const std::wstring& text) { g_nowPlaying = text; }  // drawn by the next SetItems
 
 void SetLightTheme(bool light) {
     g_light = light;

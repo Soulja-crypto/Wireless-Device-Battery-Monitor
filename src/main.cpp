@@ -15,6 +15,7 @@
 
 #include "devices.h"
 #include "report.h"
+#include "spotify.h"
 #include "widget.h"
 
 namespace {
@@ -24,12 +25,13 @@ constexpr UINT WM_RESULTS = WM_APP + 2;
 constexpr UINT WM_WIDGET_CLICK = WM_APP + 3;
 constexpr UINT_PTR TIMER_DEBOUNCE = 1;
 constexpr UINT_PTR TIMER_WIDGET = 2;
+constexpr UINT_PTR TIMER_MEDIA = 3;
 constexpr DWORD POLL_INTERVAL_MS = 60 * 1000;
 constexpr int LOW_BATTERY = 15;
 constexpr UINT PLACEHOLDER_ID = 1;
 
 enum MenuId : UINT {
-    ID_REFRESH = 100, ID_AUTOSTART, ID_HIDE_LAST_KNOWN, ID_WIDGET_BACKGROUND, ID_EXIT, ID_MODE_WIDGET, ID_MODE_TRAY, ID_SUPPORT, ID_REPORT,
+    ID_REFRESH = 100, ID_AUTOSTART, ID_HIDE_LAST_KNOWN, ID_WIDGET_BACKGROUND, ID_EXIT, ID_MODE_WIDGET, ID_MODE_TRAY, ID_SUPPORT, ID_REPORT, ID_SPOTIFY,
     ID_MONITOR_ALL = 300, ID_MONITOR_MAIN, ID_MONITOR_FIRST,  // "Show the widget on": ID_MONITOR_FIRST + 0..31
     ID_DEVICE_FIRST = 1000
 };
@@ -51,6 +53,8 @@ bool g_useWidget = false;      // what is actually shown right now
 bool g_hideLastKnown = false;  // hide (last known) / asleep devices from taskbar and tray
 std::wstring g_widgetMonitor = L"all";  // which taskbars show the widget: "all", "main" or one monitor id
 bool g_widgetBackground = false;  // draw a plate behind the taskbar text (transparent taskbar themes)
+bool g_showSpotify = true;        // show the song Spotify is playing next to the battery levels
+std::wstring g_nowPlaying;        // "Artist - Song" from Spotify, empty when nothing plays
 
 struct TrayEntry {
     UINT uid = 0;
@@ -163,6 +167,8 @@ bool LoadHideLastKnown() { return LoadBoolSetting(L"HideLastKnownDevices", false
 void SaveHideLastKnown(bool on) { SaveBoolSetting(L"HideLastKnownDevices", on); }
 bool LoadWidgetBackground() { return LoadBoolSetting(L"WidgetBackground", false); }
 void SaveWidgetBackground(bool on) { SaveBoolSetting(L"WidgetBackground", on); }
+bool LoadShowSpotify() { return LoadBoolSetting(L"ShowSpotify", true); }
+void SaveShowSpotify(bool on) { SaveBoolSetting(L"ShowSpotify", on); }
 std::wstring LoadWidgetMonitor() {
     wchar_t buf[512] = {};
     DWORD size = sizeof(buf) - sizeof(wchar_t);
@@ -440,6 +446,7 @@ std::vector<TrayEntry*> OrderedEntries(bool shownOnly) {
 
 void UpdateWidget() {
     if (!g_useWidget) return;
+    widget::SetNowPlaying(g_nowPlaying);
     std::vector<TrayEntry*> list = OrderedEntries(true);
     std::vector<WidgetItem> items;
     std::wstring tip;
@@ -457,7 +464,16 @@ void UpdateWidget() {
         tip += e->st.name + L": " + StatusText(*e);
     }
     if (tip.empty()) tip = L"Wireless Battery: no devices with battery info found";
+    if (!g_nowPlaying.empty()) tip += L"\nSpotify: " + g_nowPlaying;
     widget::SetItems(items, tip);
+}
+
+// Reads what Spotify is playing and updates the taskbar strip when it changed. Called every 2 s.
+void UpdateNowPlaying() {
+    std::wstring now = g_showSpotify ? spotify::NowPlaying() : std::wstring();
+    if (now == g_nowPlaying) return;
+    g_nowPlaying = now;
+    UpdateWidget();  // redraws the strip and the tooltip (does nothing in tray-icon mode)
 }
 
 void OnResults(std::vector<DeviceStatus>& results) {
@@ -602,6 +618,8 @@ void ShowMenu() {
     CheckMenuRadioItem(m, ID_MODE_WIDGET, ID_MODE_TRAY, g_wantWidget ? ID_MODE_WIDGET : ID_MODE_TRAY, MF_BYCOMMAND);
     UINT bgFlags = MF_STRING | (g_widgetBackground ? MF_CHECKED : 0) | (g_wantWidget ? 0 : MF_GRAYED);
     AppendMenuW(m, bgFlags, ID_WIDGET_BACKGROUND, L"Background behind taskbar text (for transparent taskbars)");
+    AppendMenuW(m, MF_STRING | (g_showSpotify ? MF_CHECKED : 0) | (g_wantWidget ? 0 : MF_GRAYED), ID_SPOTIFY,
+                L"Show the Spotify song on the taskbar");
     // With more than one monitor: choose which taskbars show the widget (all, main only, or one monitor).
     auto monitors = widget::OtherMonitors();
     if (monitors.size() > 31) monitors.resize(31);
@@ -641,6 +659,11 @@ void ShowMenu() {
         case ID_AUTOSTART: SetAutostart(!AutostartEnabled()); break;
         case ID_HIDE_LAST_KNOWN: SetHideLastKnown(!g_hideLastKnown); break;
         case ID_WIDGET_BACKGROUND: SetWidgetBackground(!g_widgetBackground); break;
+        case ID_SPOTIFY:
+            g_showSpotify = !g_showSpotify;
+            SaveShowSpotify(g_showSpotify);
+            UpdateNowPlaying();
+            break;
         case ID_MONITOR_ALL: SetWidgetMonitor(L"all"); break;
         case ID_MONITOR_MAIN: SetWidgetMonitor(L"main"); break;
         case ID_MODE_WIDGET: SetMode(true); break;
@@ -712,6 +735,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_TIMER:
             if (wp == TIMER_DEBOUNCE) { KillTimer(h, TIMER_DEBOUNCE); SetEvent(g_refreshEvt); }
             if (wp == TIMER_WIDGET) Reconcile();
+            if (wp == TIMER_MEDIA) UpdateNowPlaying();
             return 0;
         case WM_SETTINGCHANGE:
             if (lp && !lstrcmpW((LPCWSTR)lp, L"ImmersiveColorSet")) {
@@ -721,6 +745,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_DESTROY:
             KillTimer(h, TIMER_WIDGET);
+            KillTimer(h, TIMER_MEDIA);
             widget::Destroy();
             SetEvent(g_stopEvt);
             if (g_worker) WaitForSingleObject(g_worker, 5000);
@@ -841,6 +866,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
     g_wantWidget = LoadWidgetMode();
     g_hideLastKnown = LoadHideLastKnown();
     g_widgetBackground = LoadWidgetBackground();
+    g_showSpotify = LoadShowSpotify();
     widget::SetBackground(g_widgetBackground);  // remembered by the widget across re-creation
     g_widgetMonitor = LoadWidgetMonitor();
     widget::SetMonitorChoice(g_widgetMonitor);
@@ -849,6 +875,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
     Reconcile();
     UpdatePlaceholder();  // something to click on until the first poll finishes
     SetTimer(g_hwnd, TIMER_WIDGET, 1000, nullptr);
+    SetTimer(g_hwnd, TIMER_MEDIA, 2000, nullptr);
     g_worker = CreateThread(nullptr, 0, Worker, nullptr, 0, nullptr);
 
     MSG m;
